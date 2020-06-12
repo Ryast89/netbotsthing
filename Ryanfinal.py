@@ -16,45 +16,28 @@ from netbots_log import setLogLevel
 import netbots_ipc as nbipc
 import netbots_math as nbmath
 
-robotName = "RyanBot v6"
+robotName = "RyanBot v7"
 
 
 def play(botSocket, srvConf):
     gameNumber = 0  # The last game number bot got from the server (0 == no game has been started)
     while True:
-        try:
-            # Get information to determine if bot is alive (health > 0) and if a new game has started.
-            
-            getInfoReply = 0
-        except nbipc.NetBotSocketException as e:
-            # We are always allowed to make getInfoRequests, even if our health == 0. Something serious has gone wrong.
-            log(str(e), "FAILURE")
-            log("Is netbot server still running?")
-            quit()
-
-        #if getInfoReply['health'] == 0:
-            # we are dead, there is nothing we can do until we are alive again.
-            #continue
-        
         if gameNumber == 0:
             # A new game has started. Record new gameNumber and reset any variables back to their initial state
             gameNumber = 1
-
             # start every new game in scan mode. No point waiting if we know we have not fired our canon yet.
             currentMode = "scan"
             
             #Define other variables
             
+            startTime = time.perf_counter()
             scanSlices = 1
-            
             scanSliceWidth = 0
-            
             minScanSpace = 0
-            
             maxScanSpace = math.pi * 2
             timer = 0
-            
             currentDirection = 0
+            fireStep = 0
         try:
             if currentDirection == 0:
                 getLocationReply = botSocket.sendRecvMessage({'type': 'getLocationRequest'})
@@ -75,18 +58,6 @@ def play(botSocket, srvConf):
                 currentDirection = currentDirection + math.pi*0.25
                 botSocket.sendRecvMessage({'type': 'setDirectionRequest', 'requestedDirection': nbmath.normalizeAngle(currentDirection)})
                 botSocket.sendRecvMessage({'type': 'setSpeedRequest', 'requestedSpeed': 80})
-            if currentMode == "wait":
-                
-                getCanonReply = botSocket.sendRecvMessage({'type': 'getCanonRequest'})
-                if not getCanonReply['shellInProgress']:
-                    # we are ready to shoot again!
-                    currentMode = "scanExpand"
-                
-                
-                #waitSteps = waitSteps - 1
-                #if waitSteps <= 0:
-                #   currentMode = "scanExpand"
-            
             if currentMode == "scanExpand":
                 scanSliceWidth = math.pi * 2 / scanSlices
                 scanReply = botSocket.sendRecvMessage(
@@ -99,12 +70,16 @@ def play(botSocket, srvConf):
                     if scanSlices != 32:
                         currentMode = "scan"
                     else:
+                        currentTime = time.perf_counter()
+                        guessSteps = round((currentTime - startTime) / srvConf['stepSec'])
                         fireDirection = minScanSpace + scanSliceWidth / 2
-                        botSocket.sendRecvMessage(
-                           {'type': 'fireCanonRequest', 'direction': nbmath.normalizeAngle(fireDirection), 'distance': scanReply['distance']})
-                        # make sure don't try and shoot again until this shell has exploded.
-                        currentMode = "wait"
-                        waitSteps = math.ceil(scanReply['distance']/40)
+                        if guessSteps > fireStep:
+                            botSocket.sendRecvMessage(
+                                {'type': 'fireCanonRequest', 'direction': nbmath.normalizeAngle(fireDirection), 'distance': max(scanReply['distance'], 75)})
+                            currentTime =  time.perf_counter()
+                            guessSteps = round((currentTime - startTime) / srvConf['stepSec'])
+                            fireStep = math.ceil(max(scanReply['distance'], 75)/40) + guessSteps
+                        currentMode = "scanExpand"
                 
             if currentMode == "scan":
                 scanSliceWidth = math.pi * 2 / scanSlices
@@ -118,11 +93,15 @@ def play(botSocket, srvConf):
                     else:
                         # fire down the center of the slice we just scanned.
                         fireDirection = minScanSpace + scanSliceWidth / 2
-                        botSocket.sendRecvMessage(
-                           {'type': 'fireCanonRequest', 'direction': nbmath.normalizeAngle(fireDirection), 'distance': scanReply['distance']})
-                        # make sure don't try and shoot again until this shell has exploded.
-                        currentMode = "wait"
-                        waitSteps = math.ceil(scanReply['distance']/40)
+                        currentTime =  time.perf_counter()
+                        guessSteps = round((currentTime - startTime) / srvConf['stepSec'])
+                        if guessSteps > fireStep:
+                            botSocket.sendRecvMessage(
+                                {'type': 'fireCanonRequest', 'direction': nbmath.normalizeAngle(fireDirection), 'distance':  max(scanReply['distance'], 75)})
+                            currentTime = time.perf_counter()
+                            guessSteps = round((currentTime - startTime) / srvConf['stepSec'])
+                            fireStep = math.ceil(max(scanReply['distance'], 75)/40) + guessSteps
+                        currentMode = "scanExpand"
                         maxScanSpace = scanCenter
                 else:
                     if scanSlices < 32:
@@ -136,45 +115,43 @@ def play(botSocket, srvConf):
                         if scanReply2['distance'] == 0:
                             currentMode = "scanExpand"
                         else:
-                            botSocket.sendRecvMessage(
-                                {'type': 'fireCanonRequest', 'direction': nbmath.normalizeAngle(fireDirection), 'distance': scanReply2['distance']})
-                            # make sure don't try and shoot again until this shell has exploded.
+                            currentTime = time.perf_counter()
+                            guessSteps = round((currentTime - startTime) / srvConf['stepSec'])
+                            if guessSteps > fireStep:
+                                botSocket.sendRecvMessage(
+                                    {'type': 'fireCanonRequest', 'direction': nbmath.normalizeAngle(fireDirection), 'distance':  max(scanReply2['distance'], 75)})
+                                currentTime = time.perf_counter()
+                                guessSteps = round((currentTime - startTime) / srvConf['stepSec'])
+                                fireStep = math.ceil(max(scanReply2['distance'], 75)/40) + guessSteps
                             minScanSpace = scanCenter
-                            currentMode = "wait"
-                            waitSteps = math.ceil(scanReply2['distance']/40)
+                            currentMode = "scanExpand"
                             
         except nbipc.NetBotSocketException as e:
             # Consider this a warning here. It may simply be that a request returned
             # an Error reply because our health == 0 since we last checked. We can
             # continue until the next game starts.
-            log(str(e), "WARNING")
-            
-            #Assume that health is 0. Reset all variables.
-            currentMode = "scan"
-            
-            timer = 0
-            
-            currentDirection = 0
-            scanSlices = 1
-            
-            scanSliceWidth = 0
-            
-            minScanSpace = 0
-            
-            maxScanSpace = math.pi * 2
+            if "health == 0" not in str(e):
+                log(str(e), "WARNING")
+            else:
+                #health is 0. Reset all variables.
+                currentMode = "scan"
+                timer = 0
+                currentDirection = 0
+                scanSlices = 1
+                scanSliceWidth = 0
+                minScanSpace = 0
+                maxScanSpace = math.pi * 2
             continue
 
 ##################################################################
 # Standard stuff below.
 ##################################################################
 
-
 def quit(signal=None, frame=None):
     global botSocket
     log(botSocket.getStats())
     log("Quiting", "INFO")
     exit()
-
 
 def main():
     global botSocket  # This is global so quit() can print stats in botSocket
@@ -212,7 +189,6 @@ def main():
 
     # Now we can play, but we may have to wait for a game to start.
     play(botSocket, srvConf)
-
 
 if __name__ == "__main__":
     # execute only if run as a script
